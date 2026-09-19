@@ -127,6 +127,29 @@ class RenderWorker:
             self.error = error
 
 
+class OnnxReference:
+    """Run the original FP32 encoder/decoder on the exact HIL observations."""
+
+    def __init__(self, encoder_path: Path, decoder_path: Path) -> None:
+        import onnxruntime as ort
+
+        self.encoder = ort.InferenceSession(str(encoder_path), providers=["CPUExecutionProvider"])
+        self.decoder = ort.InferenceSession(str(decoder_path), providers=["CPUExecutionProvider"])
+        self.encoder_input = self.encoder.get_inputs()[0].name
+        self.decoder_input = self.decoder.get_inputs()[0].name
+
+    def run(self, encoder_obs: np.ndarray, decoder_obs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        token = np.asarray(
+            self.encoder.run(None, {self.encoder_input: encoder_obs[None, :]})[0], dtype=np.float32
+        ).reshape(-1)
+        decoder_input = decoder_obs.copy()
+        decoder_input[:64] = token
+        action = np.asarray(
+            self.decoder.run(None, {self.decoder_input: decoder_input[None, :]})[0], dtype=np.float32
+        ).reshape(-1)
+        return token, action
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--host", default="192.168.3.40")
@@ -140,7 +163,14 @@ def main() -> None:
     parser.add_argument("--limit-torque", action="store_true", help="apply the XML/hardware torque limits")
     parser.add_argument("--action-limit", type=float, default=1.0, help="clip policy action before action scaling")
     parser.add_argument("--pd-scale", type=float, default=1.0, help="scale the formal G1 Kp/Kd for direct MuJoCo torque")
+    parser.add_argument("--onnx-encoder", type=Path, help="FP32 encoder for step-by-step RKNN comparison")
+    parser.add_argument("--onnx-decoder", type=Path, help="FP32 decoder for step-by-step RKNN comparison")
+    parser.add_argument("--realtime", action="store_true", help="pace control ticks to --period; slow down if inference is late")
     args = parser.parse_args()
+
+    if bool(args.onnx_encoder) != bool(args.onnx_decoder):
+        parser.error("--onnx-encoder and --onnx-decoder must be provided together")
+    onnx_reference = OnnxReference(args.onnx_encoder, args.onnx_decoder) if args.onnx_encoder else None
 
     model = mujoco.MjModel.from_xml_path(str(args.xml))
     reference = G1Reference.from_joblib(args.reference, target_fps=50.0)
@@ -167,6 +197,7 @@ def main() -> None:
         history.append(np.zeros(93, dtype=np.float32))
     rtts = []
     control_ticks = []
+    action_errors = []
     sequence = 0
     with socket.create_connection((args.host, args.port), timeout=10.0) as sock:
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -180,6 +211,9 @@ def main() -> None:
                 history.pop(0)
                 history.append(state.astype(np.float32))
                 encoder, decoder = make_observations(model, data, history, reference, step)
+                onnx_action = None
+                if onnx_reference is not None:
+                    onnx_token, onnx_action = onnx_reference.run(encoder, decoder)
                 sequence += 1
                 started = time.perf_counter()
                 sock.sendall(pack_request(sequence, encoder, decoder))
@@ -190,6 +224,8 @@ def main() -> None:
                 rtts.append((time.perf_counter() - started) * 1000.0)
                 if not np.isfinite(action).all():
                     raise RuntimeError("RK3576 returned a non-finite action")
+                if onnx_reference is not None and onnx_action is not None:
+                    action_errors.append(float(np.max(np.abs(action - onnx_action))))
                 action = np.clip(action, -args.action_limit, args.action_limit)
                 last_action = action
                 action_mujoco = action[ISAACLAB_TO_MUJOCO]
@@ -205,6 +241,8 @@ def main() -> None:
                 if step == 0 or (step + 1) % 100 == 0:
                     print(f"step={step + 1} rtt_ms={rtts[-1]:.3f} q0={data.qpos[7]:.3f} action0={action[0]:.3f}")
                 control_ticks.append((time.perf_counter() - tick_started) * 1000.0)
+                if args.realtime:
+                    time.sleep(max(0.0, args.period - (time.perf_counter() - tick_started)))
         finally:
             if renderer is not None:
                 renderer.stop()
@@ -212,6 +250,10 @@ def main() -> None:
     ticks_np = np.asarray(control_ticks)
     print(f"hil_steps={len(rtts)} avg_rtt_ms={rtts_np.mean():.3f} p99_rtt_ms={np.percentile(rtts_np, 99):.3f} "
           f"avg_control_tick_ms={ticks_np.mean():.3f} control_hz={1000.0 / ticks_np.mean():.2f}")
+    if action_errors:
+        errors_np = np.asarray(action_errors)
+        print(f"onnx_vs_rknn_action_max_abs_mean={errors_np.mean():.6f} "
+              f"p99={np.percentile(errors_np, 99):.6f} max={errors_np.max():.6f}")
 
 
 if __name__ == "__main__":

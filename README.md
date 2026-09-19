@@ -131,3 +131,22 @@ The run used the real reference motion for the 10-frame G1 encoder lookahead;
 the MuJoCo physics and RK3576 encoder/decoder path completed all 500 steps
 without a disconnect or non-finite output. This is still a deployment/HIL
 check and not a claim of stable robot walking.
+
+For step-by-step FP32 ONNX versus RK3576 INT8 comparison on the same
+observations, run with `--realtime`; if host ONNX plus HIL exceeds 20 ms, the
+simulation advances at the slower achieved rate instead of dropping frames:
+
+```bash
+python3 -m scripts.mujoco_hil_client \
+  --host 192.168.3.40 --port 39001 --steps 300 --realtime \
+  --pd-scale 0.1 \
+  --onnx-encoder /home/jvwei/GR00T-WholeBodyControl/gear_sonic_deploy/policy/low_latency/model_encoder.onnx \
+  --onnx-decoder /home/jvwei/GR00T-WholeBodyControl/gear_sonic_deploy/policy/low_latency/model_decoder.onnx
+```
+
+The first real-sample comparison completed 300 steps at an achieved compute
+rate of 35.63 Hz (average control computation 28.063 ms). The raw RKNN and
+ONNX decoder actions had mean per-step max-absolute error 1.178426, p99
+2.817320, and maximum 4.477791. This is a clear quantization/conversion
+validation failure for the current RKNN artifacts and must be investigated
+before treating the INT8 policy as accuracy-equivalent.
