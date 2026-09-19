@@ -77,7 +77,7 @@ end_to_end: 135.88 Hz average, p99 8.34 ms
 
 This is a throughput smoke test with random inputs, not an accuracy result.
 The deployed files are in the isolated board directory
-`/home/soulde/sonic_rk3576_int8_20260919/`.
+`/home/soulde/sonic_rk_infer/`.
 
 Do not treat the synthetic calibration command as an accuracy result. Before
 deploying to a robot, compare ONNX Runtime and RKNN outputs on recorded,
@@ -113,3 +113,21 @@ does not wait for the GUI. Use `--render-rate` to limit the visualization rate.
 The first independent HIL run measured 7.86 ms average NPU/network RTT,
 11.75 ms p99 RTT, and 109.27 Hz including the MuJoCo physics tick. This is a
 headless control-loop smoke test; it does not yet claim stable walking.
+
+Using the included real reference sample
+`assets/reference/walk_forward_amateur_001__A001.pkl` (1202 frames, 29 DoF,
+30 Hz source data), a 500-step headless HIL run completed successfully on the
+RK3576:
+
+```text
+server throughput: 116.76 Hz
+average RTT:          7.671 ms
+p99 RTT:             11.494 ms
+average control tick: 8.628 ms
+control loop:        115.90 Hz
+```
+
+The run used the real reference motion for the 10-frame G1 encoder lookahead;
+the MuJoCo physics and RK3576 encoder/decoder path completed all 500 steps
+without a disconnect or non-finite output. This is still a deployment/HIL
+check and not a claim of stable robot walking.
