@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 import mujoco
+import mujoco.viewer
 import numpy as np
 
 from scripts.hil_protocol import ACTION_ELEMENTS, pack_request, unpack_response
