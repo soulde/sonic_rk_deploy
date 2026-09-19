@@ -11,6 +11,7 @@ check*.onnx
 # Local validation outputs and runtime logs.
 artifacts/validation/
 *.log
+board_repo/
 
 # Local credentials and editor files.
 .env
