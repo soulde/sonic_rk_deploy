@@ -21,6 +21,15 @@ rknn = [
     # RKNN-Toolkit2 needs to be installed from local wheel
     # Run: uv pip install -e .[rknn] after installing rknn-toolkit2
 ]
+official-sim = [
+    "pyyaml>=6.0",
+    "tyro>=0.8",
+    "msgpack>=1.0",
+    "msgpack-numpy>=0.4",
+    "pyzmq>=25",
+    "pin>=2.6",
+    "cyclonedds==0.10.2",
+]
 
 [build-system]
 requires = ["setuptools>=68.0"]
