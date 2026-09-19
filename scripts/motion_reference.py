@@ -78,18 +78,25 @@ class G1Reference:
     root_orientation_6d: np.ndarray
     root_positions: np.ndarray
     fps: float
+    root_quaternions_xyzw: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         self.joint_positions_mujoco = np.asarray(self.joint_positions_mujoco, dtype=np.float64)
         self.joint_velocities_mujoco = np.asarray(self.joint_velocities_mujoco, dtype=np.float64)
         self.root_orientation_6d = np.asarray(self.root_orientation_6d, dtype=np.float64)
         self.root_positions = np.asarray(self.root_positions, dtype=np.float64)
+        if self.root_quaternions_xyzw is None:
+            self.root_quaternions_xyzw = np.tile(np.array([0.0, 0.0, 0.0, 1.0]), (len(self.joint_positions_mujoco), 1))
+        else:
+            self.root_quaternions_xyzw = np.asarray(self.root_quaternions_xyzw, dtype=np.float64)
         if self.joint_positions_mujoco.ndim != 2 or self.joint_positions_mujoco.shape[1] != 29:
             raise ValueError("joint positions must have shape [frames, 29]")
         if self.joint_velocities_mujoco.shape != self.joint_positions_mujoco.shape:
             raise ValueError("joint velocities must match joint positions")
         if self.root_orientation_6d.shape != (len(self.joint_positions_mujoco), 6):
             raise ValueError("root orientation must have shape [frames, 6]")
+        if self.root_quaternions_xyzw.shape != (len(self.joint_positions_mujoco), 4):
+            raise ValueError("root quaternions must have shape [frames, 4]")
 
     @classmethod
     def from_joblib(cls, path: Path, target_fps: float = 50.0) -> "G1Reference":
@@ -102,7 +109,14 @@ class G1Reference:
         root_positions = resample_linear(data["root_trans_offset"], source_fps, target_fps)
         root_quaternions = _resample_quaternion_xyzw(data["root_rot"], source_fps, target_fps)
         velocities = np.gradient(positions, 1.0 / target_fps, axis=0, edge_order=1)
-        return cls(positions, velocities, _quaternion_xyzw_to_rotation_6d(root_quaternions), root_positions, target_fps)
+        return cls(
+            positions,
+            velocities,
+            _quaternion_xyzw_to_rotation_6d(root_quaternions),
+            root_positions,
+            target_fps,
+            root_quaternions,
+        )
 
     @property
     def num_frames(self) -> int:

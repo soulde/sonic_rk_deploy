@@ -11,6 +11,7 @@ check*.onnx
 # Local validation outputs and runtime logs.
 artifacts/validation/
 *.log
+MUJOCO_LOG.TXT
 board_repo/
 
 # Local credentials and editor files.

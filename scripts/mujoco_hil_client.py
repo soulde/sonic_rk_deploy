@@ -25,7 +25,7 @@ ISAACLAB_TO_MUJOCO = np.array(
     dtype=np.int64,
 )
 MUJOCO_TO_ISAACLAB = np.argsort(ISAACLAB_TO_MUJOCO)
-DEFAULT_ANGLES = np.array(
+DEFAULT_ANGLES_ISAAC = np.array(
     [-0.312, 0, 0, 0.669, -0.363, 0, -0.312, 0, 0, 0.669, -0.363, 0,
      0, 0, 0, 0.2, 0.2, 0, 0.6, 0, 0, 0, 0.2, -0.2, 0, 0.6, 0, 0, 0],
     dtype=np.float64,
@@ -38,6 +38,18 @@ ARMATURE = np.array([0.025101925, 0.025101925, 0.010177520, 0.025101925, 0.00360
 EFFORT = np.array([139, 139, 88, 139, 25, 25, 139, 139, 88, 139, 25, 25, 88, 25, 25,
                    25, 25, 25, 25, 25, 5, 5, 25, 25, 25, 25, 25, 5, 5], dtype=np.float64)
 ACTION_SCALE = 0.25 * EFFORT / (ARMATURE * (10 * 2 * np.pi) ** 2)
+NATURAL_FREQ = 10.0 * 2.0 * np.pi
+DAMPING_RATIO = 2.0
+# The copied deployment parameter header stores these arrays in MuJoCo/
+# hardware order.  The policy action itself is the only field remapped below.
+DEFAULT_ANGLES = DEFAULT_ANGLES_ISAAC
+ACTION_SCALE_MUJOCO = ACTION_SCALE.copy()
+KP_MUJOCO = ARMATURE * NATURAL_FREQ**2
+KD_MUJOCO = 2.0 * DAMPING_RATIO * ARMATURE * NATURAL_FREQ
+DOUBLE_STIFFNESS = np.array([4, 5, 10, 11, 13, 14], dtype=np.int64)
+KP_MUJOCO[DOUBLE_STIFFNESS] *= 2.0
+KD_MUJOCO[DOUBLE_STIFFNESS] *= 2.0
+ACTION_SCALE_MUJOCO[DOUBLE_STIFFNESS] *= 0.5
 
 
 def recv_full(sock: socket.socket, size: int) -> bytes:
@@ -125,6 +137,9 @@ def main() -> None:
     parser.add_argument("--render", action="store_true")
     parser.add_argument("--render-rate", type=float, default=60.0)
     parser.add_argument("--period", type=float, default=0.02)
+    parser.add_argument("--limit-torque", action="store_true", help="apply the XML/hardware torque limits")
+    parser.add_argument("--action-limit", type=float, default=1.0, help="clip policy action before action scaling")
+    parser.add_argument("--pd-scale", type=float, default=1.0, help="scale the formal G1 Kp/Kd for direct MuJoCo torque")
     args = parser.parse_args()
 
     model = mujoco.MjModel.from_xml_path(str(args.xml))
@@ -132,6 +147,14 @@ def main() -> None:
     data = mujoco.MjData(model)
     if model.nq != 36 or model.nu != ACTION_ELEMENTS:
         raise RuntimeError(f"expected G1 nq=36, nu=29; got nq={model.nq}, nu={model.nu}")
+    if not args.limit_torque:
+        # The copied XML uses normalized [-1, 1] motor controls and joint effort
+        # limits. Disable both for diagnosing the policy/PD loop in MuJoCo.
+        model.actuator_ctrllimited[:] = False
+        model.jnt_actfrclimited[:] = False
+    data.qpos[0:3] = reference.root_positions[0]
+    root_xyzw = reference.root_quaternions_xyzw[0]
+    data.qpos[3:7] = np.array([root_xyzw[3], root_xyzw[0], root_xyzw[1], root_xyzw[2]])
     data.qpos[7:36] = reference.joint_positions_mujoco[0]
     mujoco.mj_forward(model, data)
     mailbox = LatestState()
@@ -165,13 +188,18 @@ def main() -> None:
                 if received_sequence != sequence or status != 0:
                     raise RuntimeError(f"bad response sequence/status: {received_sequence}/{status}")
                 rtts.append((time.perf_counter() - started) * 1000.0)
+                if not np.isfinite(action).all():
+                    raise RuntimeError("RK3576 returned a non-finite action")
+                action = np.clip(action, -args.action_limit, args.action_limit)
                 last_action = action
                 action_mujoco = action[ISAACLAB_TO_MUJOCO]
-                target = DEFAULT_ANGLES + ACTION_SCALE * action_mujoco
+                target = DEFAULT_ANGLES + ACTION_SCALE_MUJOCO * action_mujoco
                 for _ in range(max(1, round(args.period / model.opt.timestep))):
-                    torque = 8.0 * (target - data.qpos[7:36]) - 0.2 * data.qvel[6:35]
-                    data.ctrl[:] = np.clip(torque, -1.0, 1.0)
+                    torque = args.pd_scale * (KP_MUJOCO * (target - data.qpos[7:36]) - KD_MUJOCO * data.qvel[6:35])
+                    data.ctrl[:] = torque
                     mujoco.mj_step(model, data)
+                    if not np.isfinite(data.qpos).all() or not np.isfinite(data.qvel).all():
+                        raise RuntimeError(f"MuJoCo state became non-finite at control step {step + 1}")
                 if renderer is not None:
                     mailbox.publish(data.qpos)
                 if step == 0 or (step + 1) % 100 == 0:
