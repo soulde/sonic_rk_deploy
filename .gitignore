@@ -1,0 +1,17 @@
+.venv/
+.pytest_cache/
+__pycache__/
+*.pyc
+inference/build/
+
+# RKNN Toolkit2 intermediate ONNX graphs are large and reproducible.
+check*.onnx
+
+# Local validation outputs and runtime logs.
+artifacts/validation/
+*.log
+
+# Local credentials and editor files.
+.env
+.vscode/
+.idea/
